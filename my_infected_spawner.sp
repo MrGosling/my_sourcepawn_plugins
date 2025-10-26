@@ -4,148 +4,87 @@
 #include <sourcemod>
 #include <sdktools>
 
-#define PLUGIN_VERSION "1.4"
+#define PLUGIN_VERSION "1.0"
 
-public Plugin myinfo =
+public Plugin myinfo = 
 {
-    name        = "Spawn ChargerTank",
-    author      = "MrGosling",
-    description = "Spawns a Tank with custom HP and speed at the point you're looking.",
-    version     = PLUGIN_VERSION,
-    url         = "about:blank"
+    name = "L4D ChargerTank",
+    author = "MrGosling",
+    description = "Increases Tank speed if health is below a certain threshold on spawn.",
+    version = PLUGIN_VERSION,
+    url = "not url - 46.174.52.3:27201"
 };
+
+ConVar g_hEnabled;
+ConVar g_hHealthThreshold;
+ConVar g_hTankSpeed;
 
 public void OnPluginStart()
 {
-    RegAdminCmd("sm_chargertank", Command_SpawnTank, ADMFLAG_ROOT, "Spawn a custom Tank where you look (admin only)");
-    PrintToServer("[ChargerTank] Plugin loaded. Use !chargertank or sm_chargertank");
+    g_hEnabled = CreateConVar("l4d_chargertank_enabled", "1", "Enable/disable the plugin. 0 = off, 1 = on.", _, true, 0.0, true, 1.0);
+    g_hHealthThreshold = CreateConVar("l4d_chargertank_health", "2000", "If Tank spawns with less than this much health, speed will be changed.", _, true, 1.0);
+    g_hTankSpeed = CreateConVar("l4d_chargertank_speed", "300", "The speed to set for the low-health Tank.", _, true, 1.0);
+
+    HookEvent("tank_spawn", Event_TankSpawn);
+
+    PrintToServer("[L4D ChargerTank] Plugin loaded. Version: %s", PLUGIN_VERSION);
+    PrintToChatAll("[L4D ChargerTank] Plugin loaded. Version: %s", PLUGIN_VERSION);
 }
 
-//-------------------------------------------------------------
-// Команда: спавн Танка в точке взгляда игрока
-//-------------------------------------------------------------
-public Action Command_SpawnTank(int client, int args)
+public void Event_TankSpawn(Event event, const char[] name, bool dontBroadcast)
 {
-    if (!IsClientInGame(client))
+    PrintToChatAll("[L4D ChargerTank] tank_spawn event fired.");
+
+    if (!g_hEnabled.BoolValue)
     {
-        PrintToChat(client, "[ChargerTank] You must be in the game.");
-        return Plugin_Handled;
+        PrintToChatAll("[L4D ChargerTank] Plugin is disabled, skipping.");
+        return;
     }
 
-    float eyePos[3], eyeAng[3], endPos[3];
-    GetClientEyePosition(client, eyePos);
-    GetClientEyeAngles(client, eyeAng);
+    int tank = event.GetInt("tankid");
+    PrintToChatAll("[L4D ChargerTank] Tank entity id: %d", tank);
 
-    GetLookEndPosition(eyePos, eyeAng, 800.0, endPos); // Найдём точку на которой взгляд пересекает мир
-
-    int spawner = CreateEntityByName("commentary_zombie_spawner");
-    if (spawner == -1)
+    if (tank > 0 && IsValidEntity(tank))
     {
-        PrintToChatAll("[ChargerTank] Failed to create zombie spawner!");
-        return Plugin_Handled;
-    }
+        int class = GetEntProp(tank, Prop_Send, "m_zombieClass");
+        PrintToChatAll("[L4D ChargerTank] Zombie class of entity: %d", class);
 
-    DispatchKeyValue(spawner, "spawnflags", "8");
-    DispatchKeyValue(spawner, "population", "tank");
-    DispatchKeyValue(spawner, "targetname", "temp_tank_spawner");
-
-    DispatchSpawn(spawner);
-    TeleportEntity(spawner, endPos, NULL_VECTOR, NULL_VECTOR);
-
-    PrintToChatAll("[ChargerTank] Spawner created at [%.1f %.1f %.1f].", endPos[0], endPos[1], endPos[2]);
-
-    // Команда спавна Танка
-    SetVariantString("Tank");
-    AcceptEntityInput(spawner, "SpawnZombie");
-
-    // Подождём 0.5с, затем ищем Танка рядом с этой точкой
-    CreateTimer(0.5, Timer_FindTankNearPoint, spawner, TIMER_FLAG_NO_MAPCHANGE);
-    return Plugin_Handled;
-}
-
-//-------------------------------------------------------------
-// Таймер: ищем ближайшего Танка и изменяем его характеристики
-//-------------------------------------------------------------
-public Action Timer_FindTankNearPoint(Handle timer, any spawner)
-{
-    float spawnPos[3];
-    GetEntPropVector(spawner, Prop_Send, "m_vecOrigin", spawnPos);
-
-    int maxEnts = GetMaxEntities();
-    int found = -1;
-
-    for (int i = 1; i < maxEnts; i++)
-    {
-        if (!IsValidEntity(i)) continue;
-
-        char cname[64];
-        GetEntityClassname(i, cname, sizeof(cname));
-        if (!StrEqual(cname, "tank")) continue;
-
-        float entPos[3];
-        GetEntPropVector(i, Prop_Send, "m_vecOrigin", entPos);
-        if (GetVectorDistance(spawnPos, entPos) <= 200.0) // если Танк в радиусе 200 от точки спавна
+        if (class != 5) // 5 is tank
         {
-            found = i;
-            break;
+            PrintToChatAll("[L4D ChargerTank] Entity is not a Tank, skipping.");
+            return;
+        }
+
+        CreateTimer(0.1, Timer_SetTankSpeed, tank, TIMER_FLAG_NO_MAPCHANGE);
+    }
+    else
+    {
+        PrintToChatAll("[L4D ChargerTank] Invalid tank entity, skipping.");
+    }
+}
+
+public Action Timer_SetTankSpeed(Handle timer, any tank)
+{
+    if (tank > 0 && IsValidEntity(tank))
+    {
+        int health = GetEntProp(tank, Prop_Data, "m_iHealth");
+        PrintToChatAll("[L4D ChargerTank] Tank health on spawn: %d", health);
+
+        if (health < g_hHealthThreshold.IntValue && health > 0)
+        {
+            float speedScale = g_hTankSpeed.FloatValue / 210.0;
+            SetEntPropFloat(tank, Prop_Send, "m_flLaggedMovementValue", speedScale);
+            PrintToChatAll("[L4D ChargerTank] Setting Tank speed to %.2f (scale %.3f) due to low health.", g_hTankSpeed.FloatValue, speedScale);
+            PrintToChatAll("[L4D ChargerTank] Tank speed changed to %.2f because health is low (%d).", g_hTankSpeed.FloatValue, health);
+        }
+        else
+        {
+            PrintToChatAll("[L4D ChargerTank] Tank health above threshold, speed not changed.");
         }
     }
-
-    if (found == -1)
-    {
-        PrintToChatAll("[ChargerTank] No Tank found near spawn point!");
-        return Plugin_Stop;
-    }
-
-    // Изменяем HP и скорость
-    SetEntProp(found, Prop_Data, "m_iHealth", 1000);
-    SetEntPropFloat(found, Prop_Send, "m_flLaggedMovementValue", 300.0 / 210.0);
-
-    // Запускаем таймер для постоянного закрепления скорости
-    CreateTimer(0.3, Timer_KeepSpeed, EntIndexToEntRef(found), TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
-
-    AcceptEntityInput(found, "Wake");
-    PrintToChatAll("[ChargerTank] Tank %d updated: HP=1000, speed≈300.", found);
-    return Plugin_Stop;
-}
-
-//-------------------------------------------------------------
-// Таймер для фикса скорости Танка (если Director сбросит)
-//-------------------------------------------------------------
-public Action Timer_KeepSpeed(Handle timer, any ref)
-{
-    int ent = EntRefToEntIndex(ref);
-    if (ent == INVALID_ENT_REFERENCE || !IsValidEntity(ent))
-        return Plugin_Stop;
-
-    SetEntPropFloat(ent, Prop_Send, "m_flLaggedMovementValue", 300.0 / 210.0);
-    return Plugin_Continue;
-}
-
-//-------------------------------------------------------------
-// Вычисляем точку пересечения взгляда с объектами (RayTrace)
-//-------------------------------------------------------------
-void GetLookEndPosition(const float start[3], const float angles[3], float dist, float output[3])
-{
-    float dir[3];
-    GetAngleVectors(angles, dir, NULL_VECTOR, NULL_VECTOR);
-
-    float end[3];
-    end[0] = start[0] + dir[0] * dist;
-    end[1] = start[1] + dir[1] * dist;
-    end[2] = start[2] + dir[2] * dist;
-
-    Handle trace = TR_TraceRayFilterEx(start, end, MASK_SOLID, RayType_EndPoint, TraceEntityFilterPlayers);
-    if (TR_DidHit(trace))
-        TR_GetEndPosition(output, trace);
     else
-        output = end;
-
-    CloseHandle(trace);
-}
-
-// Игнорируем игроков при трассе луча
-public bool TraceEntityFilterPlayers(int ent, int mask)
-{
-    return (ent > MaxClients);
+    {
+        PrintToChatAll("[L4D ChargerTank] Tank entity invalid on timer, skipping.");
+    }
+    return Plugin_Continue;
 }
